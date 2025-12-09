@@ -1,11 +1,15 @@
-import string
-
 import pandas as pd
 import numpy as np
 from pandas import DataFrame
-from sklearn.preprocessing import StandardScaler
 from rdkit import Chem
+from utilities import get_rdkit_descriptors, replace_atoms
 
+
+
+def get_molecular_features(data : DataFrame):
+    properties_data = data['SMILES'].apply(get_rdkit_descriptors)
+    data = pd.concat([data, properties_data], axis=1).dropna()
+    return data
 
 def clean_data(data : DataFrame):
     data["smiles_len"] = data['SMILES'].str.len()
@@ -18,60 +22,12 @@ def clean_data(data : DataFrame):
             return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         else:
             return None
-
     data['CANONICAL_SMILES'] = data['SMILES'].apply(canonicalize)
     data['SMILES'] = data['SMILES'].apply(replace_atoms)
+    data['CANONICAL_SMILES'] = data['CANONICAL_SMILES'].apply(replace_atoms)
     # Delete None from data
     data = data.dropna(subset=['CANONICAL_SMILES'])
     return data
-
-
-def split_data(data : DataFrame):
-    train = data.sample(frac=0.8, random_state=100)
-    test = data.drop(train.index)
-    return train, test
-
-def replace_atoms(smiles, reverse=False):
-    d = {'Br': 'X',
-         'Cl': 'Y',
-         'Se': 'Z',
-         'br': 'x',
-         'cl': 'y',
-         'se': 'z',
-         '-]': 'V]'
-         }
-    new_smiles = smiles
-    for key in d:
-        new_smiles = new_smiles.replace(key, d[key])
-    return new_smiles
-
-def reverse_replace_atoms(smiles, reverse=False):
-    d = {
-    'X': 'Br',
-    'Y': 'Cl',
-    'Z': 'Se',
-    'x': 'br',
-    'y': 'cl',
-    'z': 'se',
-    'V]': '-]'
-    }
-    new_smiles = smiles
-    for key in d:
-        new_smiles = new_smiles.replace(key, d[key])
-    return new_smiles
-
-def get_charset(data): # Get all possible char's
-    unique_chars = set(''.join(data['SMILES']))
-    unique_chars.add('!')  # Start token
-    unique_chars.add('E')  # End token
-    charset = sorted(list(unique_chars))
-    return charset
-
-def get_char_to_int(charset):
-    char_to_int = dict()
-    for i in range(len(charset)):
-        char_to_int[charset[i]] = i
-    return char_to_int
 
 def vectorize_from_smiles(data : DataFrame, charset, char_to_int, max_size : int):
     smiles_list = data['SMILES'].to_list()
@@ -83,3 +39,8 @@ def vectorize_from_smiles(data : DataFrame, charset, char_to_int, max_size : int
         for j in range(len(smiles_list[i]) + 1, max_size):  # Adding End char
             one_hot[i, j, char_to_int['E']] = True
     return one_hot[:, :-1, :], one_hot[:, 1:, :]
+
+def preprocess_data(data : DataFrame):
+    data = get_molecular_features(data)
+    data = clean_data(data)
+

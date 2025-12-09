@@ -8,4 +8,4 @@ OUTPUT_PATH = ''
 
 def main():
     data = pd.read_csv(DATASET_PATH)
-    preprocessed_data = clean_data(data)
+    preprocessed_data_train, preprocessed_data_test = clean_data(data)
