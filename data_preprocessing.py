@@ -2,8 +2,7 @@ import pandas as pd
 import numpy as np
 from pandas import DataFrame
 from rdkit import Chem
-from utilities import get_rdkit_descriptors, replace_atoms
-
+from utilities import get_rdkit_descriptors, replace_atoms, is_safe_molecule
 
 
 def get_molecular_features(data : DataFrame):
@@ -12,9 +11,9 @@ def get_molecular_features(data : DataFrame):
     return data
 
 def clean_data(data : DataFrame):
+    data = data[data['SMILES'].apply(is_safe_molecule)]
     data["smiles_len"] = data['SMILES'].str.len()
     data = data[(data["smiles_len"] >= 35) & (data["smiles_len"] <= 75)]
-    data = data[['SMILES']]
 
     def canonicalize(s):
         mol = Chem.MolFromSmiles(s)
@@ -27,20 +26,49 @@ def clean_data(data : DataFrame):
     data['CANONICAL_SMILES'] = data['CANONICAL_SMILES'].apply(replace_atoms)
     # Delete None from data
     data = data.dropna(subset=['CANONICAL_SMILES'])
+    data = data.drop(columns=['smiles_len'])
     return data
 
-def vectorize_from_smiles(data : DataFrame, charset, char_to_int, max_size : int):
-    smiles_list = data['SMILES'].to_list()
-    one_hot = np.zeros((len(smiles_list), max_size, len(charset)), dtype=bool)
-    for i in range(len(smiles_list)):
-        one_hot[i, 0, char_to_int['!']] = True  # Adding Start char
-        for j in range(len(smiles_list[i])):
-            one_hot[i, j + 1, char_to_int[smiles_list[i][j]]] = True
-        for j in range(len(smiles_list[i]) + 1, max_size):  # Adding End char
-            one_hot[i, j, char_to_int['E']] = True
+
+def vectorize_smiles(smiles_list, charset, char_to_int, max_size):
+    """
+    Принимает список строк (SMILES), а не DataFrame.
+    Возвращает float32 тензоры X и Y.
+    """
+    num_samples = len(smiles_list)
+    vocab_size = len(charset)
+
+    # Используем float32 для Keras
+    one_hot = np.zeros((num_samples, max_size, vocab_size), dtype='float32')
+
+    for i, smile in enumerate(smiles_list):
+        # Start char '!'
+        one_hot[i, 0, char_to_int['!']] = 1.0
+
+        # Body
+        for j, char in enumerate(smile):
+            if j + 1 < max_size:
+                if char in char_to_int:
+                    one_hot[i, j + 1, char_to_int[char]] = 1.0
+
+        # Padding with 'E' (End char) till the end
+        # (В вашей логике вы заполняли всё оставшееся место символами E)
+        for j in range(len(smile) + 1, max_size):
+            one_hot[i, j, char_to_int['E']] = 1.0
+
+    # X: с 0 по предпоследний, Y: с 1 по последний
     return one_hot[:, :-1, :], one_hot[:, 1:, :]
+
+
+def preprocess_data(data: DataFrame):
+    # Сначала считаем фичи на чистых SMILES (до замены атомов)
+    data = get_molecular_features(data)
+    # Потом чистим, канонизируем и меняем атомы
+    data = clean_data(data)
+    return data  # <--- ДОБАВЛЕН RETURN
 
 def preprocess_data(data : DataFrame):
     data = get_molecular_features(data)
     data = clean_data(data)
+    return data
 

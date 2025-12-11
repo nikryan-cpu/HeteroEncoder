@@ -6,6 +6,21 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, QED
 
 
+# 1=H, 6=C, 7=N, 8=O, 9=F, 15=P, 16=S, 17=Cl, 35=Br, 53=I
+ALLOWED_ATOMS = {1, 6, 7, 8, 9, 15, 16, 17, 35, 53}
+
+def is_safe_molecule(smiles):   # Without 1=H, 6=C, 7=N, 8=O, 9=F, 15=P, 16=S, 17=Cl, 35=Br, 53=I
+    try:
+        mol = Chem.MolFromSmiles(str(smiles))
+        if not mol: return False
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() not in ALLOWED_ATOMS:
+                return False  # Найден запрещенный атом (B, Si, Na...)
+        return True
+    except:
+        return False
+
 def preprocess_embeddings(embeds_df_train, embeds_df_test):     # normalize molecular features
     sc = StandardScaler().fit(embeds_df_train)
     embeds_df_train = sc.transform(embeds_df_train)
