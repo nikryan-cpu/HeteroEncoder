@@ -1,109 +1,152 @@
-import pandas as pd
 import numpy as np
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset, random_split
+import pandas as pd
 import pickle
 import os
-import tensorflow as tf
-from sklearn.model_selection import train_test_split
-from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+import csv
+from tqdm import tqdm
+from model import HeteroEncoderCVAE
 
-from data_preprocessing import preprocess_data, vectorize_smiles
-from utilities import get_charset, get_char_to_int, preprocess_embeddings, preprocess_energy
-from model import build_hetero_encoder
+def loss_function(logits, x, mu, logvar, kld_weight=0.005):
+    """
+    Standard VAE loss: Reconstruction (CrossEntropy) + KL Divergence.
+    """
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_targets = x[:, 1:].contiguous()
+    B, L, V = shift_logits.shape
 
-# --- CONFIGURATION ---
-DATASET_PATH = 'FINAL_Results_for_Model.csv'  # or your raw file
-PROCESSED_DATA_PATH = 'READY_TO_TRAIN_DATA_V3.csv'
-ENERGY_COL = 'Energy'
-MAX_LEN = 75
-BATCH_SIZE = 128
-EPOCHS = 50
-
-
-def train():
-    # 1. Load Data
-    if os.path.exists(PROCESSED_DATA_PATH):
-        print(f"Loading cache: {PROCESSED_DATA_PATH}")
-        data = pd.read_csv(PROCESSED_DATA_PATH)
-    else:
-        print(f"Processing raw file: {DATASET_PATH}")
-        if not os.path.exists(DATASET_PATH):
-            print("ERROR: Dataset file not found.")
-            return
-        raw_data = pd.read_csv(DATASET_PATH)
-
-        # Rename column if needed
-        if ENERGY_COL not in raw_data.columns and len(raw_data.columns) > 1:
-            print(f"Warning: '{ENERGY_COL}' not found. Using 2nd column as Energy.")
-            raw_data.rename(columns={raw_data.columns[1]: ENERGY_COL}, inplace=True)
-
-        data = preprocess_data(raw_data)
-        data.to_csv(PROCESSED_DATA_PATH, index=False)
-
-    print(f"Data ready: {len(data)} samples")
-
-    # 2. Vocabulary
-    data = data.reset_index(drop=True)
-    full_text = data['SMILES'].astype(str).tolist() + data['CANONICAL_SMILES'].astype(str).tolist()
-
-    charset = get_charset(pd.DataFrame({'SMILES': full_text}))
-    char_to_int = get_char_to_int(charset)
-    vocab_size = len(charset)
-    print(f"Vocab size: {vocab_size}")
-
-    # Save vocab for generation
-    with open('vocab.pkl', 'wb') as f:
-        pickle.dump({'charset': charset, 'char_to_int': char_to_int}, f)
-
-    # 3. Split Data
-    train_df, test_df = train_test_split(data, test_size=0.1, random_state=42)
-
-    # 4. Vectorization (One-Hot)
-    # Using MAX_LEN + 1 because vectorize_smiles splits into Input (t) and Target (t+1)
-    print("Vectorizing SMILES...")
-    X_s_train, Y_s_train = vectorize_smiles(train_df['SMILES'].tolist(), charset, char_to_int, MAX_LEN + 1)
-    X_s_test, Y_s_test = vectorize_smiles(test_df['SMILES'].tolist(), charset, char_to_int, MAX_LEN + 1)
-
-    X_c_train, Y_c_train = vectorize_smiles(train_df['CANONICAL_SMILES'].tolist(), charset, char_to_int, MAX_LEN + 1)
-    X_c_test, Y_c_test = vectorize_smiles(test_df['CANONICAL_SMILES'].tolist(), charset, char_to_int, MAX_LEN + 1)
-
-    # 5. Normalize Features & Energy
-    feat_cols = ['MolWt', 'LogP', 'NumHDonors', 'NumHAcceptors', 'TPSA', 'NumRotatableBonds', 'RingCount', 'QED']
-
-    X_feat_train, X_feat_test, sc_feat = preprocess_embeddings(train_df[feat_cols], test_df[feat_cols])
-    X_en_train, X_en_test, sc_en = preprocess_energy(train_df[ENERGY_COL], test_df[ENERGY_COL])
-
-    # Save scalers for generation
-    with open('scalers.pkl', 'wb') as f:
-        pickle.dump({'sc_feat': sc_feat, 'sc_energy': sc_en}, f)
-
-    # 6. Build Model
-    print("Building model...")
-    model = build_hetero_encoder(vocab_size, MAX_LEN, len(feat_cols), 128)
-
-    losses = ['categorical_crossentropy', 'categorical_crossentropy']
-    metrics = ['accuracy', 'accuracy']
-    model.compile(optimizer='adam', loss=losses, metrics=metrics)
-
-    # 7. Training
-    callbacks = [
-        ModelCheckpoint('best_model.h5', monitor='val_loss', save_best_only=True, verbose=1),
-        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1)
-    ]
-
-    print("Starting training...")
-    model.fit(
-        x=[X_s_train, X_c_train, X_feat_train, X_en_train],
-        y=[Y_s_train, Y_c_train],
-        validation_data=(
-            [X_s_test, X_c_test, X_feat_test, X_en_test],
-            [Y_s_test, Y_c_test]
-        ),
-        batch_size=BATCH_SIZE,
-        epochs=EPOCHS,
-        callbacks=callbacks
+    recon_loss = F.cross_entropy(
+        shift_logits.view(-1, V),
+        shift_targets.view(-1),
+        ignore_index=0,
+        reduction='mean'
     )
-    print("Training complete!")
 
+    kld = -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
+    total_loss = recon_loss + kld_weight * kld
+
+    return total_loss, recon_loss, kld
+
+def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on device: {device}")
+
+    # --- 1. DATA LOADING ---
+    if not os.path.exists('processed_data.pkl'):
+        print("Error: processed_data.pkl not found.")
+        return
+
+    df = pd.read_pickle('processed_data.pkl')
+    with open('vocab.pkl', 'rb') as f:
+        tokenizer = pickle.load(f)
+
+    max_len = 85
+    X_smiles = torch.tensor([tokenizer.encode(s, max_len) for s in df['CANONICAL_SMILES']]).long()
+    descriptors_np = np.stack(df['descriptors_norm'].values)
+    X_desc = torch.from_numpy(descriptors_np).float()
+    X_energy = torch.tensor(df['Energy'].values).float().unsqueeze(1)
+
+    dataset = TensorDataset(X_smiles, X_desc, X_energy)
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+
+    # Fixed seed for reproducibility
+    generator = torch.Generator().manual_seed(42)
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # --- 2. INITIALIZATION ---
+    model = HeteroEncoderCVAE(tokenizer.vocab_size()).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # --- 3. RESUME CHECKPOINT ---
+    checkpoint_path = 'checkpoint_last.pth'
+    start_epoch = 1
+    best_val_loss = float('inf')
+
+    if os.path.exists(checkpoint_path):
+        print(f"--> Resuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+    else:
+        print("--> Starting training from scratch.")
+
+    # --- 4. LOGGING SETUP ---
+    epoch_log_file = 'training_log.csv'
+    detailed_log_file = 'training_log_detailed.csv'
+
+    if start_epoch == 1:
+        with open(epoch_log_file, 'w', newline='') as f:
+            csv.writer(f).writerow(['Epoch', 'Train_Loss', 'Val_Loss'])
+        with open(detailed_log_file, 'w', newline='') as f:
+            csv.writer(f).writerow(['Epoch', 'Batch', 'Loss', 'Recon', 'KLD'])
+
+    # --- 5. TRAINING LOOP ---
+    for epoch in range(start_epoch, epochs + 1):
+        model.train()
+        train_loss_accum = 0
+        loop = tqdm(train_loader, desc=f"Ep {epoch}/{epochs}")
+
+        for batch_idx, batch in enumerate(loop):
+            smi, desc, eng = [b.to(device) for b in batch]
+
+            optimizer.zero_grad()
+            logits, mu, logvar = model(smi, desc, eng)
+            loss, recon, kld = loss_function(logits, smi, mu, logvar, kld_weight)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            optimizer.step()
+
+            train_loss_accum += loss.item()
+
+            # Batch logging
+            with open(detailed_log_file, 'a', newline='') as f:
+                csv.writer(f).writerow([epoch, batch_idx, f"{loss.item():.4f}", f"{recon.item():.4f}", f"{kld.item():.4f}"])
+
+            loop.set_postfix(loss=f"{loss.item():.4f}")
+
+        # --- VALIDATION ---
+        model.eval()
+        val_loss_accum = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                smi, desc, eng = [b.to(device) for b in batch]
+                logits, mu, logvar = model(smi, desc, eng)
+                loss, _, _ = loss_function(logits, smi, mu, logvar, kld_weight)
+                val_loss_accum += loss.item()
+
+        avg_train_loss = train_loss_accum / len(train_loader)
+        avg_val_loss = val_loss_accum / len(val_loader)
+
+        print(f"Epoch {epoch} Results | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+        # Save epoch stats
+        with open(epoch_log_file, 'a', newline='') as f:
+            csv.writer(f).writerow([epoch, f"{avg_train_loss:.5f}", f"{avg_val_loss:.5f}"])
+
+        # --- SAVE CHECKPOINTS ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), 'model_best.pth')
+            print(f"--> New Best Model Saved (Val Loss: {best_val_loss:.4f})")
+
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_val_loss': best_val_loss
+        }
+        torch.save(checkpoint, 'checkpoint_last.pth')
+        torch.save(model.state_dict(), 'model_last.pth')
 
 if __name__ == "__main__":
-    train()
+    run_training()

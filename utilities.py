@@ -1,150 +1,92 @@
+import torch
+import matplotlib.pyplot as plt
 import pandas as pd
-from pandas import DataFrame
-from sklearn.preprocessing import StandardScaler
 from rdkit import Chem
-from rdkit.Chem import Descriptors, QED, MolFromSmarts
-
-# Allowed atoms: H, C, N, O, F, P, S, Cl, Br, I
-ALLOWED_ATOMS = {1, 6, 7, 8, 9, 15, 16, 17, 35, 53}
-PHARMACOPHORE_SMARTS = MolFromSmarts("O=C(N)c1c2ccccc2ncc1")
+import os
 
 
-def is_safe_molecule(smiles):
-    try:
-        mol = Chem.MolFromSmiles(str(smiles))
-        if not mol: return False
-        for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() not in ALLOWED_ATOMS:
-                return False
-        return True
-    except:
-        return False
+class SmilesTokenizer:
+    def __init__(self):
+        self.stoi = {'<pad>': 0, '<sos>': 1, '<eos>': 2}
+        self.itos = {0: '<pad>', 1: '<sos>', 2: '<eos>'}
+        self.replacements = {'Cl': 'L', 'Br': 'R'}
+        self.reverse_replacements = {'L': 'Cl', 'R': 'Br'}
+
+    def fit(self, smiles_list):
+        chars = set()
+        for s in smiles_list:
+            s = self._replace_two_letter(s)
+            chars.update(set(s))
+        for i, c in enumerate(sorted(list(chars)), start=3):
+            self.stoi[c] = i
+            self.itos[i] = c
+
+    def _replace_two_letter(self, smi):
+        for k, v in self.replacements.items():
+            smi = smi.replace(k, v)
+        return smi
+
+    def _restore_two_letter(self, smi):
+        for k, v in self.reverse_replacements.items():
+            smi = smi.replace(k, v)
+        return smi
+
+    def encode(self, smi, max_len):
+        smi = self._replace_two_letter(smi)
+        tokens = [self.stoi['<sos>']] + [self.stoi[c] for c in smi] + [self.stoi['<eos>']]
+        if len(tokens) < max_len:
+            tokens += [self.stoi['<pad>']] * (max_len - len(tokens))
+        return tokens[:max_len]
+
+    def decode(self, tokens):
+        smi = ""
+        for t in tokens:
+            if t == self.stoi['<eos>']: break
+            if t == self.stoi['<sos>']: continue
+            if t == self.stoi['<pad>']: continue
+            smi += self.itos.get(t, '')
+        return self._restore_two_letter(smi)
+
+    def vocab_size(self):
+        return len(self.stoi)
 
 
-def preprocess_embeddings(embeds_df_train, embeds_df_test):
-    sc = StandardScaler().fit(embeds_df_train)
-    return sc.transform(embeds_df_train), sc.transform(embeds_df_test), sc
+def get_reward(smiles, scaffold_smarts):
+    """
+    Reward: -5 (Invalid), +1 (Valid, no scaffold), +5 (Valid + Scaffold)
+    """
+    if not smiles: return -5.0
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None: return -5.0
+
+    scaffold = Chem.MolFromSmarts(scaffold_smarts)
+    if mol.HasSubstructMatch(scaffold):
+        return 5.0
+    return 1.0
 
 
-def preprocess_energy(energy_train, energy_test):
-    sc_energy = StandardScaler().fit(energy_train.to_numpy().reshape(-1, 1))
-    return sc_energy.transform(energy_train.to_numpy().reshape(-1, 1)), \
-        sc_energy.transform(energy_test.to_numpy().reshape(-1, 1)), sc_energy
+def plot_training_log(log_path, title='Training Log'):
+    if not os.path.exists(log_path):
+        print(f"Log file {log_path} not found.")
+        return
 
+    df = pd.read_csv(log_path)
+    plt.figure(figsize=(10, 5))
 
-def get_charset(data):
-    unique_chars = set(''.join(data['SMILES']))
-    unique_chars.update(['!', 'E'])
-    return sorted(list(unique_chars))
+    if 'train_loss' in df.columns:
+        plt.plot(df['epoch'], df['train_loss'], label='Total Loss')
+        if 'recon_loss' in df.columns:
+            plt.plot(df['epoch'], df['recon_loss'], label='Recon Loss', linestyle='--')
+        plt.ylabel('Loss')
 
+    elif 'avg_reward' in df.columns:
+        plt.plot(df['epoch'], df['avg_reward'], label='Avg Reward', color='green')
+        plt.ylabel('Reward')
 
-def get_char_to_int(charset):
-    return {c: i for i, c in enumerate(charset)}
-
-
-def replace_atoms(smiles, reverse=False):
-    # Shorten SMILES by replacing 2-char atoms/groups with single characters
-    d = {
-    '[C@@H]': '1', '[C@H]': '2', '[C@@]': '3', '[C@]': '4',
-    '[S@@]': '5', '[S@]': '6', '[P@@]': '7', '[P@]': '8',
-
-    '[NH3+]': 'a', '[NH2+]': 'b', '[nH+]': 'c', '[NH+]': 'd',
-    '[N+]': 'e', '[N-]': 'f', '[n+]': 'g', '[n-]': 'h',
-
-    '[O-]': 'i', '[O+]': 'j', '[OH+]': 'k',
-    '[S-]': 'l', '[S+]': 'm', '[s+]': 'n',
-
-    '[nH]': 'o', '[NH]': 'p',
-    '[sH]': 'q', '[oH]': 'r',
-    '[pH]': 's', '[PH]': 't',
-
-    'Cl': 'X', 'Br': 'Y',
-    'Si': 'Z', 'Se': 'W',
-
-    '[C]': 'C', '[N]': 'N', '[O]': 'O', '[S]': 'S', '[P]': 'P',
-    '[F]': 'F', '[I]': 'I', '[B]': 'B',
-    '[c]': 'c', '[n]': 'n', '[o]': 'o', '[s]': 's',
-
-    '[CH3]': 'C', '[CH2]': 'C', '[CH]': 'C', '[CH4]': 'C',
-}
-    for key in sorted(d.keys(), key=len, reverse=True):
-        smiles = smiles.replace(key, d[key])
-    return smiles
-
-
-def reverse_replace_atoms(smiles, reverse=False):
-    d = {
- '1': '[C@@H]',
- '2': '[C@H]',
- '3': '[C@@]',
- '4': '[C@]',
- '5': '[S@@]',
- '6': '[S@]',
- '7': '[P@@]',
- '8': '[P@]',
- 'a': '[NH3+]',
- 'b': '[NH2+]',
- 'c': '[c]',
- 'd': '[NH+]',
- 'e': '[N+]',
- 'f': '[N-]',
- 'g': '[n+]',
- 'h': '[n-]',
- 'i': '[O-]',
- 'j': '[O+]',
- 'k': '[OH+]',
- 'l': '[S-]',
- 'm': '[S+]',
- 'n': '[n]',
- 'o': '[o]',
- 'p': '[NH]',
- 'q': '[sH]',
- 'r': '[oH]',
- 's': '[s]',
- 't': '[PH]',
- 'X': 'Cl',
- 'Y': 'Br',
- 'Z': 'Si',
- 'W': 'Se',
- 'N': '[N]',
- 'O': '[O]',
- 'S': '[S]',
- 'P': '[P]',
- 'F': '[F]',
- 'I': '[I]',
- 'B': '[B]'
-    }
-    for key in d:
-        smiles = smiles.replace(key, d[key])
-    return smiles
-
-
-def clean_data(data: DataFrame):
-    print("Processing: Filtering molecules...")
-    data = data.dropna(subset=['SMILES'])
-
-    def get_representations(s):
-        try:
-            if isinstance(s, str):
-                s = s.replace('[c]', 'c').replace('[C]', 'C')
-            mol = Chem.MolFromSmiles(s)
-            if not mol or not is_safe_molecule(s): return None, None
-
-            # Return Random (Input) and Canonical (Target/ID)
-            return (Chem.MolToSmiles(mol, isomericSmiles=True, canonical=False, doRandom=True),
-                    Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True))
-        except:
-            return None, None
-
-    reps = data['SMILES'].apply(get_representations)
-    data['SMILES'] = reps.apply(lambda x: x[0])
-    data['CANONICAL_SMILES'] = reps.apply(lambda x: x[1])
-
-    data = data.dropna(subset=['SMILES', 'CANONICAL_SMILES'])
-    data = data.drop_duplicates(subset=['CANONICAL_SMILES'], keep='first')
-
-    data["len"] = data['SMILES'].str.len()
-    data = data[(data["len"] >= 35) & (data["len"] <= 75)]
-
-    print(f"Final dataset size: {len(data)}")
-    return data.drop(columns=['len'], errors='ignore')
+    plt.xlabel('Epoch')
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(log_path.replace('.csv', '.png'))
+    print(f"Plot saved to {log_path.replace('.csv', '.png')}")
+    plt.close()
