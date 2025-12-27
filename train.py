@@ -10,6 +10,16 @@ import csv
 from tqdm import tqdm
 from model import HeteroEncoderCVAE
 
+INPUT_FILE = 'pre-trained/processed_data.pkl'
+VOCAB_FILE = 'pre-trained/vocab.pkl'
+CHECKPOINT_PATH = 'pre-trained/checkpoint_last.pth'
+EPOCH_LOG_FILE_PATH = 'pre-trained/training_log.csv'
+DETAILED_LOG_FILE_PATH = 'pre-trained/training_log_detailed.csv'
+BEST_MODEL_PATH = 'pre-trained/model_best.pth'
+LAST_MODEL_PATH = 'pre-trained/model_last.pth'
+BATCH_SIZE = 100
+SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
+
 def loss_function(logits, x, mu, logvar, kld_weight=0.005):
     """
     Standard VAE loss: Reconstruction (CrossEntropy) + KL Divergence.
@@ -30,17 +40,17 @@ def loss_function(logits, x, mu, logvar, kld_weight=0.005):
 
     return total_loss, recon_loss, kld
 
-def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
+def run_training(epochs=20, batch_size=128, lr=1e-3, kld_weight=0.005):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on device: {device}")
 
     # --- 1. DATA LOADING ---
-    if not os.path.exists('processed_data.pkl'):
+    if not os.path.exists(INPUT_FILE):
         print("Error: processed_data.pkl not found.")
         return
 
-    df = pd.read_pickle('processed_data.pkl')
-    with open('vocab.pkl', 'rb') as f:
+    df = pd.read_pickle(INPUT_FILE)
+    with open(VOCAB_FILE, 'rb') as f:
         tokenizer = pickle.load(f)
 
     max_len = 85
@@ -65,7 +75,7 @@ def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # --- 3. RESUME CHECKPOINT ---
-    checkpoint_path = 'checkpoint_last.pth'
+    checkpoint_path = CHECKPOINT_PATH
     start_epoch = 1
     best_val_loss = float('inf')
 
@@ -80,8 +90,8 @@ def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
         print("--> Starting training from scratch.")
 
     # --- 4. LOGGING SETUP ---
-    epoch_log_file = 'training_log.csv'
-    detailed_log_file = 'training_log_detailed.csv'
+    epoch_log_file = EPOCH_LOG_FILE_PATH
+    detailed_log_file = DETAILED_LOG_FILE_PATH
 
     if start_epoch == 1:
         with open(epoch_log_file, 'w', newline='') as f:
@@ -136,7 +146,7 @@ def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
         # --- SAVE CHECKPOINTS ---
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), 'model_best.pth')
+            torch.save(model.state_dict(), BEST_MODEL_PATH)
             print(f"--> New Best Model Saved (Val Loss: {best_val_loss:.4f})")
 
         checkpoint = {
@@ -145,8 +155,8 @@ def run_training(epochs=50, batch_size=128, lr=1e-3, kld_weight=0.005):
             'optimizer_state_dict': optimizer.state_dict(),
             'best_val_loss': best_val_loss
         }
-        torch.save(checkpoint, 'checkpoint_last.pth')
-        torch.save(model.state_dict(), 'model_last.pth')
+        torch.save(checkpoint, CHECKPOINT_PATH)
+        torch.save(model.state_dict(), LAST_MODEL_PATH)
 
 if __name__ == "__main__":
     run_training()

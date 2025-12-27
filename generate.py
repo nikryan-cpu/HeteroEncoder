@@ -18,22 +18,22 @@ rdBase.DisableLog('rdApp.*')
 # ==========================================
 # 1. SETTINGS
 # ==========================================
-SETTINGS = {
-    'input_file': 'processed_data.pkl',  # Contains ALL known data (Train + Val)
-    'vocab_file': 'vocab.pkl',
-    'model_path': 'model_best.pth',
-    'model_rl_path': 'model_rl_best.pth',
-    'batch_size': 100
-}
+
+INPUT_FILE = 'pre-trained/processed_data.pkl'
+VOCAB_FILE = 'pre-trained/vocab.pkl'
+MODEL_PATH = 'pre-trained/model_best.pth'
+MODEL_RL_PATH = 'pre-trained/model_rl_best.pth'
+BATCH_SIZE = 100
+SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
 
 
 # ==========================================
-# 2. PHARMACOPHORE CHECK
+# 2. SCAFFOLD CHECK
 # ==========================================
-def check_pharmacophore(mol):
+def check_scaffold(mol):
     if mol is None: return False
     # Example SMARTS
-    pat = Chem.MolFromSmarts("O=C(N)c1ccnc2ccccc12")
+    pat = Chem.MolFromSmarts(SCAFFOLD)
     return mol.HasSubstructMatch(pat) if pat else False
 
 
@@ -45,28 +45,28 @@ def run_generation(total_attempts=1000, target_energy=-12, seed_energy_threshold
     print(f"=== STARTING EXPERIMENT: {total_attempts} ATTEMPTS ===")
 
     # --- A. Load Resources ---
-    with open(SETTINGS['vocab_file'], 'rb') as f:
+    with open(VOCAB_FILE, 'rb') as f:
         tokenizer = pickle.load(f)
 
     model = HeteroEncoderCVAE(vocab_size=tokenizer.vocab_size()).to(device)
-    if os.path.exists(SETTINGS['model_rl_path']):
-        model.load_state_dict(torch.load(SETTINGS['model_rl_path'], map_location=device))
-        print(f"Model loaded from {SETTINGS['model_rl_path']}")
+    if os.path.exists(MODEL_RL_PATH):
+        model.load_state_dict(torch.load(MODEL_RL_PATH, map_location=device))
+        print(f"Model loaded from {MODEL_RL_PATH}")
 
-    elif os.path.exists(SETTINGS['model_path']):
-        model.load_state_dict(torch.load(SETTINGS['model_path'], map_location=device))
-        print(f"Model loaded from {SETTINGS['model_path']}")
+    elif os.path.exists(MODEL_PATH):
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        print(f"Model loaded from {MODEL_PATH}")
     else:
         print(f"Error: Model file not found.")
         return
 
     model.eval()
 
-    if not os.path.exists(SETTINGS['input_file']):
+    if not os.path.exists(INPUT_FILE):
         print(f"Error: Data file not found.")
         return
 
-    df = pd.read_pickle(SETTINGS['input_file'])
+    df = pd.read_pickle(INPUT_FILE)
 
     # --- NOVELTY CHECK PREPARATION ---
     print("Indexing known molecules (Train + Val)...")
@@ -91,13 +91,13 @@ def run_generation(total_attempts=1000, target_energy=-12, seed_energy_threshold
     X_desc = torch.from_numpy(descriptors_np).float().to(device)
 
     dataset = TensorDataset(X_smiles, X_desc)
-    loader = DataLoader(dataset, batch_size=SETTINGS['batch_size'], shuffle=False)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     # --- C. Generation Loop ---
     # Statistics counters
     stats = {
         'valid': 0,
-        'pharmacophore': 0,
+        'scaffold': 0,
         'rejected_known': 0,  # Rejected because it's in training data
         'rejected_duplicate': 0,  # Rejected because we just generated it
         'saved': 0
@@ -162,16 +162,16 @@ def run_generation(total_attempts=1000, target_energy=-12, seed_energy_threshold
                         continue  # SKIP
 
                     # If we are here, the molecule is NOVEL and UNIQUE
-                    has_pharma = check_pharmacophore(mol)
-                    if has_pharma:
-                        stats['pharmacophore'] += 1
+                    has_scaffold = check_scaffold(mol)
+                    if has_scaffold:
+                        stats['scaffold'] += 1
 
                     unique_new_molecules.add(canon_smi)
                     stats['saved'] += 1
 
                     results_list.append({
                         'SMILES': canon_smi,
-                        'Has_Pharmacophore': has_pharma
+                        'Has_Scaffold': has_scaffold
                     })
 
     # --- D. Final Report ---
@@ -185,7 +185,7 @@ def run_generation(total_attempts=1000, target_energy=-12, seed_energy_threshold
     print(f"Rejected (Duplicates):   {stats['rejected_duplicate']}")
     print("-" * 20)
     print(f"SAVED (Novel & Unique):  {stats['saved']}")
-    print(f"  > With Pharmacophore:  {stats['pharmacophore']}")
+    print(f"  > With Scaffold:  {stats['scaffold']}")
     print("=" * 40)
 
     # Save ONLY novel and unique

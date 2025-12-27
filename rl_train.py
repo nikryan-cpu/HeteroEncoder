@@ -4,15 +4,22 @@ import torch.nn.functional as F
 import pandas as pd
 import numpy as np
 import pickle
+import os  # Добавлено для проверки существования файла
 from tqdm import tqdm
 from torch.utils.data import TensorDataset, DataLoader
 from rdkit import Chem, rdBase
+
 from model import HeteroEncoderCVAE
 
 rdBase.DisableLog('rdApp.*')
 
 # Target core structure (Scaffold)
 SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
+BEST_MODEL_TRAIN_PATH = 'pre-trained/model_best.pth'
+BEST_MODEL_RL_PATH = 'pre-trained/model_rl_best.pth'
+LAST_MODEL_RL_PATH = 'pre-trained/model_rl_last.pth'
+INPUT_FILE = 'pre-trained/processed_data.pkl'
+VOCAB_FILE = 'pre-trained/vocab.pkl'
 
 
 # ==========================================
@@ -77,16 +84,10 @@ def run_rl(
     print(f"--- Running RL with Diversity Penalty ---")
 
     # Load resources
-    with open('vocab.pkl', 'rb') as f:
+    with open(VOCAB_FILE, 'rb') as f:
         tokenizer = pickle.load(f)
 
     model = HeteroEncoderCVAE(tokenizer.vocab_size()).to(device)
-
-    try:
-        model.load_state_dict(torch.load('model_best.pth', map_location=device))
-        print("Loaded weights from model_best.pth")
-    except FileNotFoundError:
-        print("Warning: model_best.pth not found!")
 
     # Freeze Encoder: Only fine-tune the Decoder
     for param in model.encoder_gru.parameters(): param.requires_grad = False
@@ -95,8 +96,31 @@ def run_rl(
 
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
 
+    start_epoch = 1
+    best_reward = -float('inf')
+
+    if os.path.exists(LAST_MODEL_RL_PATH):
+        print(f"Found checkpoint: {LAST_MODEL_RL_PATH}. Resuming training...")
+        checkpoint = torch.load(LAST_MODEL_RL_PATH, map_location=device)
+
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_reward = checkpoint.get('best_reward', -float('inf'))
+            print(f"Resuming from Epoch {start_epoch}")
+        else:
+            model.load_state_dict(checkpoint)
+            print("Warning: Loaded weights only from RL checkpoint (no optimizer state).")
+
+    elif os.path.exists(BEST_MODEL_TRAIN_PATH):
+        print("No RL checkpoint found. Loading pre-trained base model...")
+        model.load_state_dict(torch.load(BEST_MODEL_TRAIN_PATH, map_location=device))
+    else:
+        print("Warning: No models found! Starting from scratch.")
+
     # Dataset preparation
-    df_all = pd.read_pickle('processed_data.pkl')
+    df_all = pd.read_pickle(INPUT_FILE)
     known_db_set = set(df_all['CANONICAL_SMILES'].values)
 
     # Use high-affinity molecules as training seeds
@@ -110,10 +134,7 @@ def run_rl(
     dataset = TensorDataset(X_smiles, X_desc)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
-    log_data = []
-    best_reward = -float('inf')
-
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         total_reward, batches_processed, total_mols = 0, 0, 0
         stat_valid, stat_scaf, stat_novel_db, stat_unique_epoch = 0, 0, 0, 0
 
@@ -195,8 +216,17 @@ def run_rl(
         avg_reward = total_reward / batches_processed
         print(f"\nEpoch {epoch} Summary: Reward: {avg_reward:.4f}, Novelty: {stat_novel_db / total_mols:.1%}")
 
+        checkpoint_data = {
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': epoch,
+            'best_reward': best_reward
+        }
+
         if avg_reward > best_reward:
             best_reward = avg_reward
-            torch.save(model.state_dict(), 'model_rl_best.pth')
+            checkpoint_data['best_reward'] = best_reward
+            torch.save(checkpoint_data, BEST_MODEL_RL_PATH)
+            print(f"New best model saved to {BEST_MODEL_RL_PATH}")
 
-        torch.save(model.state_dict(), 'model_rl_last.pth')
+        torch.save(checkpoint_data, LAST_MODEL_RL_PATH)

@@ -8,11 +8,14 @@ from utilities import SmilesTokenizer
 
 # Target core structure for filtering
 SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
+PREPROCESSED_FILE_PATH = 'pre-trained/processed_data.pkl'
+VOCAB_FILE = 'pre-trained/vocab.pkl'
+SCALERS_PATH = 'pre-trained/scaler_params.npy'
 
 
 def run_preprocessing(input_csv='dataset.csv'):
     # Check if processed files already exist to avoid redundant work
-    if os.path.exists('processed_data.pkl') and os.path.exists('vocab.pkl'):
+    if os.path.exists(PREPROCESSED_FILE_PATH) and os.path.exists(VOCAB_FILE):
         print("Preprocessing already done. Skipping...")
         return
 
@@ -56,10 +59,10 @@ def run_preprocessing(input_csv='dataset.csv'):
     tokenizer.fit(df_clean['CANONICAL_SMILES'])
 
     # Save processed data, tokenizer, and scaler parameters
-    df_clean.to_pickle('processed_data.pkl')
-    with open('vocab.pkl', 'wb') as f:
+    df_clean.to_pickle(PREPROCESSED_FILE_PATH)
+    with open(VOCAB_FILE, 'wb') as f:
         pickle.dump(tokenizer, f)
-    np.save('scaler_params.npy', {'min': d_min, 'max': d_max})
+    np.save(SCALERS_PATH, {'min': d_min, 'max': d_max})
 
     print(f"Done! Saved {len(df_clean)} molecules. Vocab size: {tokenizer.vocab_size()}")
 

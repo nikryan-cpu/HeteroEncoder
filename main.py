@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # Supervised Learning stage
     if args.mode == 'train' or args.mode == 'all':
         print("\n--- Running Supervised Training ---")
-        run_training(epochs=30)
+        run_training(epochs=20)
 
     # Reinforcement Learning stage
     if args.mode == 'rl' or args.mode == 'all':
