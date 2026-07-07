@@ -39,20 +39,20 @@ $$
 
 **Reconstruction Loss ($\mathcal{L}_{recon}$):** Standard **Cross-Entropy Loss** between the predicted token probabilities and the actual SMILES tokens. This forces the model to learn correct chemical syntax and grammar.
 
-```math
+$$
 \mathcal{L}_{recon} = \left( \sum_{t=1}^{T} \log P(x_t \mid x_{<t}, z, c) \right)
-```
-```math
+$$
+$$
 \left( \sum_{k=1}^n a_k b_k \right)^2 \leq \left( \sum_{k=1}^n a_k^2 \right) \left( \sum_{k=1}^n b_k^2 \right)
-```
+$$
 
-    *(Where $z$ is the latent vector and $c$ is the energy condition)*
+   *(Where $z$ is the latent vector and $c$ is the energy condition)*
 
 **KL Divergence ($\mathcal{L}_{KL}$):** Regularizes the latent space to approximate a standard Normal distribution $\mathcal{N}(0, I)$. This ensures the latent space is continuous and can be sampled.
 
-    $$
-    \mathcal{L}_{KL} = D_{KL}(q(z|x) \parallel p(z)) = -\frac{1}{2} \sum (1 + \log(\sigma^2) - \mu^2 - \sigma^2)
-    $$
+   $$
+   \mathcal{L}_{KL} = D_{KL}(q(z|x) \parallel p(z)) = -\frac{1}{2} \sum (1 + \log(\sigma^2) - \mu^2 - \sigma^2)
+   $$
 
 **Weighting ($\beta$):** We use a fixed weight ($\beta = 0.005$) to prevent posterior collapse, ensuring the decoder relies on the latent code.
 
@@ -116,7 +116,7 @@ The HeteroEncoderCVAE fuses multiple data modalities:
 git clone https://github.com/your-username/vegfr2-heterogen.git
 ```
 
-```bash 
+```bash
 cd vegfr2-heterogen
 ````
     
