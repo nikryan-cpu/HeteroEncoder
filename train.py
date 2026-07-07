@@ -20,7 +20,7 @@ LAST_MODEL_PATH = 'pre-trained/model_last.pth'
 BATCH_SIZE = 100
 SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
 
-def loss_function(logits, x, mu, logvar, kld_weight=0.005):
+def loss_function(logits, x, mu, logvar, kld_weight=0.005): #logits, smi, mu, logvar, kld_weight
     """
     Standard VAE loss: Reconstruction (CrossEntropy) + KL Divergence.
     """

@@ -191,7 +191,7 @@ def run_generation(total_attempts=1000, target_energy=-12, seed_energy_threshold
     # Save ONLY novel and unique
     if results_list:
         res_df = pd.DataFrame(results_list)
-        filename = 'novel_molecules.csv'
+        filename = 'pre-trained/novel_molecules.csv'
         res_df.to_csv(filename, index=False)
         print(f"Saved {len(res_df)} novel molecules to {filename}")
     else:

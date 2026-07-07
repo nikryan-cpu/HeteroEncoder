@@ -32,7 +32,6 @@ class HeteroEncoderCVAE(nn.Module):
         embedded = self.embedding(x)
         _, h_n = self.encoder_gru(embedded)
         h_n = h_n.squeeze(0)
-
         # Combine Text features + Descriptors
         combined = torch.cat([h_n, descriptors], dim=1)
 
