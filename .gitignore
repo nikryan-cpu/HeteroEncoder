@@ -1,0 +1,50 @@
+# --- окружение и кэш ---
+.venv/
+__pycache__/
+*.py[co]
+.idea/
+.ipynb_checkpoints/
+
+# --- логи UNICORE-клиента ---
+ucc.log
+*.log
+
+# --- транскрипты сессий ИИ-агентов ---
+session-*.md
+
+# --- артефакты запусков докинга ---
+# .u/.job — конфиги задач, .properties/.stdout/.stderr — вывод UCC
+Docking/results/
+results/
+
+# генерируется Docking/tools/sync_cluster.py из chemplus-main/src
+Docking/chemplus_local/
+
+# --- результаты генерации и промежуточные данные ---
+# data/dataset.csv и pre-trained/*.pth отслеживаются намеренно
+outputs/*.sdf
+outputs/sdf_log.csv
+outputs/prepared_*.csv
+outputs/protonated_*.csv
+outputs/novel_molecules_*.csv
+outputs/shortlist_*.csv
+outputs/local_dock/
+
+# --- десктопный GUI: не публикуется, пока не готов ---
+# убери эту строку, когда решишь выложить gui/ — остальные записи ниже
+# (gui/runs/, models/) уже настроены на этот случай и не изменятся
+gui/
+
+# состояние фоновых задач и модели, созданные через "Создать модель"
+gui/runs/
+models/
+
+# --- инструменты и локальные секреты ---
+# .claude/ и CLAUDE.md — служебные файлы Claude Code, не для публикации
+.claude/
+CLAUDE.md
+
+# Docking/settings.py — личный логин на кластере (CLUSTER_USER) и локальный
+# путь к UCC (UCC_PATH). Публикуется только Docking/settings.example.py
+# с плейсхолдерами — см. его же комментарий про то, как завести свою копию.
+Docking/settings.py

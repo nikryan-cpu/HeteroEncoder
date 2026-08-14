@@ -1,0 +1,16 @@
+# Конфигурационный файл для AutoDock Vina
+# Сгенерирован автоматически на основе положения лиганда LEV
+
+receptor = 3WZD_cleaned.pdbqt
+
+center_x = 1.536
+center_y = -6.661
+center_z = 15.338
+
+size_x = 11.7
+size_y = 12.9
+size_z = 21.8
+
+num_modes = 9
+energy_range = 3.0
+exhaustiveness = 25

@@ -4,18 +4,19 @@ import pickle
 import os
 from rdkit import Chem
 from rdkit.Chem import Descriptors
-from utilities import SmilesTokenizer
+from src.utilities import SmilesTokenizer
+import config
 
 # Target core structure for filtering
-SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
-PREPROCESSED_FILE_PATH = 'pre-trained/processed_data.pkl'
-VOCAB_FILE = 'pre-trained/vocab.pkl'
-SCALERS_PATH = 'pre-trained/scaler_params.npy'
+SCAFFOLD = config.SCAFFOLD
+PREPROCESSED_FILE_PATH = config.PROCESSED_DATA
+VOCAB_FILE = config.VOCAB
+SCALERS_PATH = config.SCALERS
 
 
-def run_preprocessing(input_csv='dataset.csv'):
+def run_preprocessing(input_csv=config.DATASET, scaffold=SCAFFOLD, force=False):
     # Check if processed files already exist to avoid redundant work
-    if os.path.exists(PREPROCESSED_FILE_PATH) and os.path.exists(VOCAB_FILE):
+    if not force and os.path.exists(PREPROCESSED_FILE_PATH) and os.path.exists(VOCAB_FILE):
         print("Preprocessing already done. Skipping...")
         return
 
@@ -26,7 +27,7 @@ def run_preprocessing(input_csv='dataset.csv'):
     df = df.drop_duplicates(subset=['CANONICAL_SMILES'])
 
     # 2. Filter molecules by scaffold presence
-    scaffold_mol = Chem.MolFromSmarts(SCAFFOLD)
+    scaffold_mol = Chem.MolFromSmarts(scaffold)
     valid_data = []
 
     print("Filtering molecules and calculating descriptors...")

@@ -9,10 +9,14 @@ import os
 sns.set(style="whitegrid")
 plt.rcParams['figure.figsize'] = (12, 8)
 
+import config
+
 FILES = {
-    'log': 'training_log.csv',
-    'real': 'PubChem_compound_smiles_substructure_C1=CC=C2C(=C1)C(=CC=N2)C(=O)N (1).csv',
-    'gen': 'generated_molecules.csv'
+    'log': config.TRAINING_LOG,
+    # Выгрузка из PubChem по подструктуре — эталон для сравнения химпространства.
+    # В репозитории её нет, положить сюда вручную.
+    'real': os.path.join(config.DATA_DIR, 'pubchem_reference.csv'),
+    'gen': config.NOVEL_MOLECULES,
 }
 
 
@@ -70,7 +74,7 @@ def plot_training_details():
         ax2.text(0.5, 0.5, 'Детальные лоссы не найдены в CSV', ha='center')
 
     plt.tight_layout()
-    plt.savefig('graph_training_loss.png')
+    plt.savefig(os.path.join(config.FIGURES_DIR, 'graph_training_loss.png'))
     print("Сохранен graph_training_loss.png")
     plt.show()
 
@@ -114,7 +118,7 @@ def plot_chemical_space():
     axes[2].set_title('QED (Drug-likeness) Distribution')
 
     plt.tight_layout()
-    plt.savefig('graph_chemical_properties.png')
+    plt.savefig(os.path.join(config.FIGURES_DIR, 'graph_chemical_properties.png'))
     print("Сохранен graph_chemical_properties.png")
     plt.show()
 

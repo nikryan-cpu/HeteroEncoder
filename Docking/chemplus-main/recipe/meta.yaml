@@ -1,0 +1,50 @@
+channels:
+  - conda-forge
+
+package:
+  name: chemplus
+  version: 0.0.4
+
+source:
+  url: ../dist/chemplus-0.0.4.tar.gz
+  sha256: 0d76536951e8d8e103b6f62644f6b89549e890ec34cada262d1d89adeb9ae7af
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install . --no-deps --ignore-installed --no-cache-dir -vv
+  noarch: python
+
+requirements:
+  host:
+    - python=3.9.*
+    - hatchling
+    - pip
+  run:
+    - python=3.9.*
+    - rdkit=2022.9.1
+    - tqdm=4.64.1
+    - mpi4py=3.1.4
+    - ipython=8.6.0
+    - pandas=1.5.1
+    - joblib=1.2.0
+    - scipy=1.9.3
+    - matplotlib=3.6.2
+    - numpy=1.23.4
+    - seaborn=0.12.1
+    - openpyxl=3.0.10
+    - pymol-open-source=2.5.0
+    - jupyterlab=4.1.1
+
+test:
+  imports:
+    - chemplus
+
+about:
+  home: https://github.com/Deep-Drug/chemplus
+  license: GPLv3
+  license_file: LICENSE
+  summary: 'The chemical toolkit for drug discovery'
+
+extra:
+  recipe-maintainers:
+    - enjoyerx

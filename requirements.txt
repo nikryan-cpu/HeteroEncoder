@@ -1,0 +1,27 @@
+# Зависимости HeteroEncoder. Версии — те, на которых проект реально работает
+# (Python 3.12, conda-окружение HeteroEncoder).
+#
+#   pip install -r requirements.txt
+#
+# RDKit и PyTorch удобнее ставить через conda — см. README.
+
+# --- ML-пайплайн: обучение, RL, генерация ---
+torch==2.13.0
+numpy==2.5.1
+pandas==3.0.3
+tqdm==4.68.2
+
+# --- химинформатика ---
+rdkit==2025.9.6
+
+# --- графики: utilities.plot_training_log, analysis.py ---
+matplotlib==3.11.0
+seaborn==0.13.2
+
+# --- докинг: конвертация PDB -> PDBQT в chemplus.vina.pdbqt ---
+joblib==1.5.3
+
+# --- десктопный GUI (gui/): FastAPI-сервер в нативном окне pywebview ---
+fastapi==0.141.1
+uvicorn==0.52.3
+pywebview==6.2.1

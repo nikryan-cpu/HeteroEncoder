@@ -5,36 +5,48 @@ import pandas as pd
 import numpy as np
 import pickle
 import os  # Добавлено для проверки существования файла
+import csv
 from tqdm import tqdm
 from torch.utils.data import TensorDataset, DataLoader
 from rdkit import Chem, rdBase
+from rdkit.Chem import Crippen, Descriptors
 
-from model import HeteroEncoderCVAE
+from src.model import HeteroEncoderCVAE
+import config
 
 rdBase.DisableLog('rdApp.*')
 
 # Target core structure (Scaffold)
-SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
-BEST_MODEL_TRAIN_PATH = 'pre-trained/model_best.pth'
-BEST_MODEL_RL_PATH = 'pre-trained/model_rl_best.pth'
-LAST_MODEL_RL_PATH = 'pre-trained/model_rl_last.pth'
-INPUT_FILE = 'pre-trained/processed_data.pkl'
-VOCAB_FILE = 'pre-trained/vocab.pkl'
+SCAFFOLD = config.SCAFFOLD
+BEST_MODEL_TRAIN_PATH = config.MODEL_BEST
+BEST_MODEL_RL_PATH = config.MODEL_RL_BEST
+LAST_MODEL_RL_PATH = config.MODEL_RL_LAST
+INPUT_FILE = config.PROCESSED_DATA
+VOCAB_FILE = config.VOCAB
 
 
 # ==========================================
 # 1. REWARD FUNCTION
 # ==========================================
-def get_reward_diversity(smiles, scaffold_smarts, known_db_set, epoch_history_set):
-    """Calculates reward with a penalty for duplicates (self-repetition)."""
-    if not smiles: return -5.0
+def get_reward_diversity(smiles, scaffold_smarts, known_db_set, epoch_history_set,
+                         weights=config.RewardWeights()):
+    """
+    Calculates reward with a penalty for duplicates (self-repetition).
+
+    weights.lipophilicity_penalty (0 by default = old behavior unchanged):
+    multiplies the reward down when LogP/MW exceed the given thresholds.
+    Without it the model has no incentive to keep molecules drug-like and
+    tends to bolt halogens onto the scaffold to farm the novelty bonus —
+    see README for the LogP ~8 finding on the current generation output.
+    """
+    if not smiles: return weights.invalid
     mol = Chem.MolFromSmiles(smiles)
-    if mol is None: return -5.0
+    if mol is None: return weights.invalid
 
     try:
         canon_smi = Chem.MolToSmiles(mol, canonical=True)
     except:
-        return -5.0
+        return weights.invalid
 
     scaffold = Chem.MolFromSmarts(scaffold_smarts)
     has_scaffold = mol.HasSubstructMatch(scaffold) if scaffold else False
@@ -44,12 +56,18 @@ def get_reward_diversity(smiles, scaffold_smarts, known_db_set, epoch_history_se
 
     if has_scaffold:
         # High reward for novel molecules; lower for duplicates/known ones
-        if is_in_db or is_in_epoch:
-            return 2.0
-        else:
-            return 10.0
+        reward = weights.scaffold_known if (is_in_db or is_in_epoch) else weights.scaffold_novel
+    else:
+        reward = weights.no_scaffold
 
-    return 0.5
+    if weights.lipophilicity_penalty > 0:
+        logp = Crippen.MolLogP(mol)
+        mw = Descriptors.MolWt(mol)
+        over = max(0.0, logp - weights.logp_threshold) + max(0.0, (mw - weights.mw_threshold) / 100.0)
+        if over > 0:
+            reward *= max(0.0, 1.0 - weights.lipophilicity_penalty * over)
+
+    return reward
 
 
 # ==========================================
@@ -78,8 +96,17 @@ def run_rl(
         batch_size=128,
         noise_scale=0.2,
         target_energy=-12.0,
-        train_energy_threshold=-10.0
+        train_energy_threshold=-10.0,
+        reward_weights=config.RewardWeights(),
+        embedding_dim=config.MODEL_EMBEDDING_DIM,
+        hidden_dim=config.MODEL_HIDDEN_DIM,
+        latent_dim=config.MODEL_LATENT_DIM,
+        progress_cb=None,
 ):
+    """
+    progress_cb(epoch, epochs, avg_reward, novelty_frac) вызывается после
+    каждой эпохи — используется GUI для живого графика, не требуется для CLI.
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"--- Running RL with Diversity Penalty ---")
 
@@ -87,7 +114,8 @@ def run_rl(
     with open(VOCAB_FILE, 'rb') as f:
         tokenizer = pickle.load(f)
 
-    model = HeteroEncoderCVAE(tokenizer.vocab_size()).to(device)
+    model = HeteroEncoderCVAE(tokenizer.vocab_size(), embedding_dim=embedding_dim,
+                              hidden_dim=hidden_dim, latent_dim=latent_dim).to(device)
 
     # Freeze Encoder: Only fine-tune the Decoder
     for param in model.encoder_gru.parameters(): param.requires_grad = False
@@ -133,6 +161,12 @@ def run_rl(
 
     dataset = TensorDataset(X_smiles, X_desc)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+
+    log_file = config.RL_LOG
+    if start_epoch == 1 and not os.path.exists(log_file):
+        with open(log_file, 'w', newline='') as f:
+            csv.writer(f).writerow(['epoch', 'avg_reward', 'valid_pct', 'scaffold_pct',
+                                    'novel_pct', 'unique_epoch_pct'])
 
     for epoch in range(start_epoch, epochs + 1):
         total_reward, batches_processed, total_mols = 0, 0, 0
@@ -186,7 +220,7 @@ def run_rl(
             rewards = []
             for i in range(current_bs):
                 smi = tokenizer.decode(tokens_batch[i])
-                r = get_reward_diversity(smi, SCAFFOLD, known_db_set, epoch_history_set)
+                r = get_reward_diversity(smi, SCAFFOLD, known_db_set, epoch_history_set, reward_weights)
                 rewards.append(r)
 
                 is_val, has_sc, is_new_db, is_uniq_ep = check_stats(smi, SCAFFOLD, known_db_set, epoch_history_set)
@@ -214,7 +248,16 @@ def run_rl(
 
         # Epoch Summary
         avg_reward = total_reward / batches_processed
-        print(f"\nEpoch {epoch} Summary: Reward: {avg_reward:.4f}, Novelty: {stat_novel_db / total_mols:.1%}")
+        novelty_frac = stat_novel_db / total_mols
+        print(f"\nEpoch {epoch} Summary: Reward: {avg_reward:.4f}, Novelty: {novelty_frac:.1%}")
+
+        with open(log_file, 'a', newline='') as f:
+            csv.writer(f).writerow([epoch, f"{avg_reward:.5f}", f"{stat_valid / total_mols:.5f}",
+                                    f"{stat_scaf / total_mols:.5f}", f"{novelty_frac:.5f}",
+                                    f"{stat_unique_epoch / total_mols:.5f}"])
+
+        if progress_cb:
+            progress_cb(epoch, epochs, avg_reward, novelty_frac)
 
         checkpoint_data = {
             'model_state_dict': model.state_dict(),

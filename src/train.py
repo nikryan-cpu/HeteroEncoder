@@ -8,17 +8,18 @@ import pickle
 import os
 import csv
 from tqdm import tqdm
-from model import HeteroEncoderCVAE
+from src.model import HeteroEncoderCVAE
+import config
 
-INPUT_FILE = 'pre-trained/processed_data.pkl'
-VOCAB_FILE = 'pre-trained/vocab.pkl'
-CHECKPOINT_PATH = 'pre-trained/checkpoint_last.pth'
-EPOCH_LOG_FILE_PATH = 'pre-trained/training_log.csv'
-DETAILED_LOG_FILE_PATH = 'pre-trained/training_log_detailed.csv'
-BEST_MODEL_PATH = 'pre-trained/model_best.pth'
-LAST_MODEL_PATH = 'pre-trained/model_last.pth'
+INPUT_FILE = config.PROCESSED_DATA
+VOCAB_FILE = config.VOCAB
+CHECKPOINT_PATH = config.CHECKPOINT
+EPOCH_LOG_FILE_PATH = config.TRAINING_LOG
+DETAILED_LOG_FILE_PATH = config.TRAINING_LOG_DETAILED
+BEST_MODEL_PATH = config.MODEL_BEST
+LAST_MODEL_PATH = config.MODEL_LAST
 BATCH_SIZE = 100
-SCAFFOLD = "O=C(N)c1ccnc2ccccc12"
+SCAFFOLD = config.SCAFFOLD
 
 def loss_function(logits, x, mu, logvar, kld_weight=0.005): #logits, smi, mu, logvar, kld_weight
     """
@@ -40,7 +41,15 @@ def loss_function(logits, x, mu, logvar, kld_weight=0.005): #logits, smi, mu, lo
 
     return total_loss, recon_loss, kld
 
-def run_training(epochs=20, batch_size=128, lr=1e-3, kld_weight=0.005):
+def run_training(epochs=20, batch_size=128, lr=1e-3, kld_weight=0.005,
+                 embedding_dim=config.MODEL_EMBEDDING_DIM,
+                 hidden_dim=config.MODEL_HIDDEN_DIM,
+                 latent_dim=config.MODEL_LATENT_DIM,
+                 progress_cb=None):
+    """
+    progress_cb(epoch, epochs, train_loss, val_loss) вызывается после каждой
+    эпохи — используется GUI для живого графика, не требуется для CLI.
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on device: {device}")
 
@@ -71,7 +80,8 @@ def run_training(epochs=20, batch_size=128, lr=1e-3, kld_weight=0.005):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # --- 2. INITIALIZATION ---
-    model = HeteroEncoderCVAE(tokenizer.vocab_size()).to(device)
+    model = HeteroEncoderCVAE(tokenizer.vocab_size(), embedding_dim=embedding_dim,
+                              hidden_dim=hidden_dim, latent_dim=latent_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # --- 3. RESUME CHECKPOINT ---
@@ -142,6 +152,9 @@ def run_training(epochs=20, batch_size=128, lr=1e-3, kld_weight=0.005):
         # Save epoch stats
         with open(epoch_log_file, 'a', newline='') as f:
             csv.writer(f).writerow([epoch, f"{avg_train_loss:.5f}", f"{avg_val_loss:.5f}"])
+
+        if progress_cb:
+            progress_cb(epoch, epochs, avg_train_loss, avg_val_loss)
 
         # --- SAVE CHECKPOINTS ---
         if avg_val_loss < best_val_loss:

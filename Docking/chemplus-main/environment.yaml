@@ -1,0 +1,22 @@
+name: chem
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9.*
+  - rdkit=2022.9.1
+  - tqdm=4.64.1
+  - mpi4py=3.1.4
+  - ipython=8.6.0
+  - pandas=1.5.1
+  - joblib=1.2.0
+  - scipy=1.9.3
+  - matplotlib=3.6.2
+  - numpy=1.23.4
+  - seaborn=0.12.1
+  - openpyxl=3.0.10
+  - pymol-open-source=2.5.0
+  - jupyterlab=4.1.1
+  - pip
+  - pip:
+    - -e .

@@ -2,14 +2,18 @@ import argparse
 import sys
 import os
 
+# Пайплайн запускается из любой директории: корень проекта кладём в sys.path,
+# чтобы `import config` и `from src...` резолвились независимо от CWD.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # PyTorch components
 import torch
 
 # Import logic for pipeline stages
-from data_preprocessing import run_preprocessing
-from train import run_training
-from rl_train import run_rl
-from generate import run_generation
+from src.data_preprocessing import run_preprocessing
+from src.train import run_training
+from src.rl_train import run_rl
+from src.generate import run_generation
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VEGFR2 HeteroEncoder Pipeline")
