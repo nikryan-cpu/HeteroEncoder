@@ -64,12 +64,40 @@ def check_and_download(job_id_file):
 
         else:
             print("\n⏳ Задача ещё выполняется или в очереди.")
-            print("   Запусти скрипт позже для проверки.")
+            print_progress(job_id_file)
+            print("   Запусти скрипт позже для повторной проверки.")
             return False
             
     except Exception as e:
         print(f"❌ Ошибка при проверке: {e}")
         return False
+
+
+def print_progress(job_id_file):
+    """Прогресс докинга, пока задача ещё выполняется на кластере — сколько
+    молекул уже задокировано и хвост лога. Обращение к кластеру не всегда
+    успешно (например, подготовка молекул ещё не закончилась и папки
+    результатов на сервере просто нет) — тогда молча ничего не печатаем,
+    это не ошибка, а нормальная ранняя стадия."""
+    try:
+        p = docking.get_docking_progress(UCC_PATH, job_id_file)
+    except Exception as e:
+        print(f"   (прогресс недоступен: {e})")
+        return
+
+    if p["total"]:
+        pct = 100 * p["done"] / p["total"]
+        print(f"📈 Прогресс: {p['done']}/{p['total']} молекул ({pct:.1f}%)")
+    elif p["done"]:
+        print(f"📈 Прогресс: задокировано {p['done']} (общее число молекул пока "
+              f"неизвестно — на кластере ещё не закончилась подготовка PDBQT)")
+    else:
+        print("📈 Прогресс: докинг ещё не начался (на кластере готовятся молекулы)")
+
+    if p["log_tail"]:
+        print("📜 Последние строки лога:")
+        for line in p["log_tail"]:
+            print(f"   {line}")
 
 
 def main():

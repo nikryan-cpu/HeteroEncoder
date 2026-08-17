@@ -42,8 +42,32 @@
 import os
 import json
 import time
+import tempfile
+import shutil
 from datetime import datetime
 from chemplus import unicore
+
+
+def _read_job_args(job_id_file):
+    """
+    Разобрать --work_dir/--sdf/Site из локального .job-файла (JSON, пишет UCC
+    при `ucc run -a`) — общая часть для get_docking_results() и
+    get_docking_progress(), обеим нужны одни и те же поля.
+    """
+    with open(job_id_file, "r") as json_file:
+        data = json.load(json_file)
+
+    work_dir = None
+    sdf = None
+    for i, arg in enumerate(data["Arguments"]):
+        if arg == "--work_dir":
+            work_dir = data["Arguments"][i + 1]
+        if arg == "--sdf":
+            sdf = data["Arguments"][i + 1]
+    work_dir = work_dir.strip("'")
+    sdf = sdf.strip("'")
+    return data, work_dir, sdf
+
 
 def get_docking_results(ucc_path, job_id_file, output_dir="."):
     """
@@ -72,26 +96,10 @@ def get_docking_results(ucc_path, job_id_file, output_dir="."):
     """
     status = unicore.get_job_status(ucc_path, job_id_file)
     if "exit code" not in status:
-        return "Job status: " + status 
-    
-    with open(job_id_file, "r") as json_file:
-        data = json.load(json_file)
-    
-    for i, arg in enumerate(data["Arguments"]):
-        if arg == "--work_dir":
-            work_dir = data["Arguments"][i+1]
-        if arg == "--sdf":
-            sdf = data["Arguments"][i+1]
-    
-    if work_dir.startswith("'"):
-        work_dir = work_dir[1:]
-    if work_dir.endswith("'"):
-        work_dir = work_dir[:-1]
-    if sdf.startswith("'"):
-        sdf = sdf[1:]
-    if sdf.endswith("'"):
-        sdf = sdf[:-1]
-    
+        return "Job status: " + status
+
+    data, work_dir, sdf = _read_job_args(job_id_file)
+
     dockscore_file = work_dir + "/dockscore.csv"
     dockscore_file = unicore.get_correct_location(data["Site"], dockscore_file)
     sdf_docked_file = work_dir + "/" + os.path.basename(sdf).split(".")[0] + "_docked.sdf.gz"
@@ -101,6 +109,80 @@ def get_docking_results(ucc_path, job_id_file, output_dir="."):
     unicore.get_file(ucc_path, sdf_docked_file, data["Output"])
     unicore.get_job_out(ucc_path, job_id_file, output_dir)
     return status
+
+
+def get_docking_progress(ucc_path, job_id_file, log_tail_lines=15):
+    """
+    Прогресс докинга ДО завершения задачи — сколько молекул уже задокировано
+    из скольких, плюс хвост лога. В отличие от get_docking_results(), не ждёт
+    "exit code" в статусе: читает файлы прямо из рабочей директории задачи на
+    кластере, а UNICORE отдаёт их независимо от того, завершилась задача или
+    ещё выполняется (задача и хранилище — разные вещи в UNICORE).
+
+    Как считается:
+        MPI-докинг (chemplus.vina.docking_mpi) пишет результат каждой молекулы
+        сразу по готовности: <sdf_name>_docked/<лиганд>.pdbqt — их количество
+        на сервере и есть числитель. Знаменатель — количество файлов в
+        <sdf_name>_pdbqt/, но эта папка появляется только когда на кластере
+        закончится начальная конвертация SDF -> PDBQT (первый этап sdf_dock(),
+        см. chemplus.vina.docking) — то есть раньше самого докинга, но не
+        сразу в момент отправки задачи.
+
+    Параметры:
+        ucc_path (str): Путь к UCC (UNICORE Command Client)
+        job_id_file (str): Файл ID задачи (.job, тот же что для get_job_status)
+        log_tail_lines (int): Сколько последних строк <sdf_name>_log.txt вернуть
+
+    Возвращает:
+        dict:
+            done (int): Сколько молекул уже задокировано (0, если докинг
+                        ещё не начался)
+            total (int|None): Сколько молекул всего, None пока <sdf_name>_pdbqt/
+                              ещё не появилась на сервере (идёт подготовка)
+            log_tail (list[str]): Последние строки лога докинга, построчно
+                                  ("Processor N: SUCCESS/FAILED - молекула, ...").
+                                  Пусто, если лог ещё не создан.
+
+    Пример:
+        p = get_docking_progress(ucc_path, job_id_file)
+        if p["total"]:
+            print(f"{p['done']}/{p['total']} ({100 * p['done'] / p['total']:.1f}%)")
+
+    Каждый вызов — обращение к кластеру через ucc ls/get-file (сеть + авторизация),
+    не годится для частого автоматического опроса — вызывай по требованию.
+    """
+    data, work_dir, sdf = _read_job_args(job_id_file)
+    site = data["Site"]
+    sdf_name = os.path.basename(sdf).split(".")[0]
+
+    def count_pdbqt(subdir):
+        server_dir = unicore.get_correct_location(site, work_dir + "/" + subdir)
+        try:
+            listing = unicore.ls_dir(ucc_path, server_dir)
+        except Exception:
+            return None
+        return sum(1 for line in listing.splitlines()
+                   if line[:1] == "-" and line.rstrip().endswith(".pdbqt"))
+
+    total = count_pdbqt(sdf_name + "_pdbqt")
+    done = count_pdbqt(sdf_name + "_docked") or 0
+
+    log_tail = []
+    log_server_path = unicore.get_correct_location(site, work_dir + "/" + sdf_name + "_log.txt")
+    tmp_dir = tempfile.mkdtemp(prefix="chemplus_progress_")
+    try:
+        unicore.get_file(ucc_path, log_server_path, tmp_dir)
+        local_log = os.path.join(tmp_dir, os.path.basename(log_server_path))
+        if os.path.exists(local_log):
+            with open(local_log, encoding="utf-8", errors="replace") as f:
+                log_tail = f.read().splitlines()[-log_tail_lines:]
+    except Exception:
+        pass
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return {"done": done, "total": total, "log_tail": log_tail}
+
 
 def unicore_dock(ucc_path, site_name, server_executable, server_work_dir, cpu_count,
                  local_work_dir, local_receptor, local_pdb_receptor, local_config, local_sdf, sync=True, serial=False, rewrite=True,
