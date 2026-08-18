@@ -38,20 +38,25 @@ from sys import platform
 from rdkit import Chem
 
 
-pr4_py = os.path.abspath(
-    os.path.join(
-        os.path.dirname(os.path.realpath(__file__)),
-        "..",
-        "..",
-        "..",
-        "..",
-        "chemnotes-main",
-        "3. Docking",
-        "Docking_Verification",
-        "prepare_receptor4.py",
-    )
-)
-        
+def _prepare_receptor4_path(mgl_python):
+    """
+    prepare_receptor4.py входит в штатную поставку MGLTools (AutoDockTools) —
+    берём его оттуда, а не из приватной копии в chemnotes-main. Раньше путь
+    был константой, посчитанной смещением от __file__ этого модуля в
+    расчёте на локальную вложенность Docking/chemplus-main/src/chemplus/vina/;
+    на кластере chemplus_local/ (см. tools/sync_cluster.py) той же глубины,
+    но chemnotes-main туда не заливается вообще — офсет попадал в
+    ~/projects/chemnotes-main, а он либо битый симлинк (SKIF_GRID_CIS,
+    указывает на исчезнувший /share/bio/data/chemnotes-main), либо
+    отсутствует (SKIF_GEO). Итог — конвертация PDB->PDBQT падала на каждой
+    молекуле с "No such file or directory". Ищем скрипт рядом с mgl_python
+    (.../bin/pythonsh -> .../MGLToolsPckgs/AutoDockTools/Utilities24/) —
+    так путь верен на любом сайте, где вообще нашёлся MGLTools.
+    """
+    mgltools_root = os.path.dirname(os.path.dirname(os.path.realpath(mgl_python)))
+    return os.path.join(mgltools_root, "MGLToolsPckgs", "AutoDockTools", "Utilities24", "prepare_receptor4.py")
+
+
 def pdb_to_pdbqt(pdb_file, pdbqt_file, mgl_python, overwrite=True, silent=False, timeout=300):
     """
     Конвертировать один PDB файл в PDBQT формат для AutoDock Vina.
@@ -79,12 +84,16 @@ def pdb_to_pdbqt(pdb_file, pdbqt_file, mgl_python, overwrite=True, silent=False,
     """
     if not os.path.exists(mgl_python):
         raise Exception("MGL python is not exists")
-        
+
     if not overwrite and os.path.exists(pdbqt_file):
          return
-    
+
     pdb_name = os.path.basename(pdb_file).split('.')[0]
-    
+
+    pr4_py = _prepare_receptor4_path(mgl_python)
+    if not os.path.exists(pr4_py):
+        raise Exception("prepare_receptor4.py not found next to mgl_python: " + pr4_py)
+
     cmd_args = [mgl_python, pr4_py, '-r', pdb_file, '-o', pdbqt_file, '-A', 'checkhydrogens']
 
     try:
@@ -278,7 +287,7 @@ def check_pdbqt_rot_bonds_image(mol_name, pdbqt_dir, pdb_dir, silent=True, fix_b
     
     try:
         bad_rb, missed_rb = check_pdbqt_rot_bonds(pdbqt_file, pdb_file, silent, fix_bad_pdbqt)
-    except AttributeError:
+    except (AttributeError, ValueError):
         return "PDB is broken"
     
     if bad_rb or missed_rb:
@@ -305,9 +314,16 @@ def check_pdbqt_dir_rot_bonds(pdbqt_dir, pdb_dir, silent=True, fix_bad_pdbqt=Fal
 
         try:
             bad_rb, missed_rb = check_pdbqt_rot_bonds(pdbqt_file, pdb_file, silent, fix_bad_pdbqt)
-        except AttributeError:
+        except (AttributeError, ValueError):
+            # AttributeError - PDB не распарсился (Chem.MolFromPDBFile вернул None);
+            # ValueError - PDBQT без секции ROOT (get_rotbond_atoms_pdbqt) - оба
+            # случая означают брак конвертации одной молекулы из тысяч, не повод
+            # ронять весь докинг-прогон целиком. Файл остаётся в pdbqt_dir как
+            # есть (не "исправлен" - fix_pdbqt тут не вызывался) и просто дойдёт
+            # до Vina как обычно, где уже есть штатная обработка неудач по
+            # каждой молекуле (see docking_mpi.py: FAILED в логе, без падения всего прогона).
             if not silent:
-                print("PDB %s is broken" % mol_name)
+                print("PDB/PDBQT %s is broken" % mol_name)
             continue
         
         if bad_rb:

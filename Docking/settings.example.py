@@ -36,6 +36,16 @@ CPU_COUNT = 200
 # Сколько CPU на узел даёт каждый сайт — отсюда считается число узлов.
 CPUS_PER_NODE = {"SKIF_GRID_CIS": 40, "SKIF_GEO": 36}
 
+# Для MyDocking_parallel.py: докинг одновременно на нескольких сайтах.
+# LOCAL_SDF делится между записями пропорционально cpu_count (взвешенным
+# round-robin, см. tools/split_sdf.py) — свой job и свои dockscore.csv/
+# *_docked.sdf.gz на каждый сайт, в отдельной подпапке текущего запуска.
+# Перед первым использованием нового сайта: python tools/sync_cluster.py --site ИМЯ
+PARALLEL_SITES = [
+    {"site_name": "SKIF_GRID_CIS", "cpu_count": 200},
+    {"site_name": "SKIF_GEO", "cpu_count": 200},
+]
+
 # ============================================================
 # ЛОКАЛЬНЫЕ ПУТИ
 # ============================================================

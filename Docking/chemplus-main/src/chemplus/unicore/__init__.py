@@ -192,7 +192,7 @@ def check_site_resources_for_job(ucc_path, site_name, job_file_path):
     if not resources["runtime"][0] <= data["Resources"]["Runtime"] <= resources["runtime"][1]:
         raise Exception(site_name + ": run time out of bounds")    
     
-def run_command(cmd_args):
+def run_command(cmd_args, timeout=None):
     """
     Выполнить UCC команду и вернуть результат.
 
@@ -201,15 +201,22 @@ def run_command(cmd_args):
 
     Параметры:
         cmd_args (list): Список аргументов команды для subprocess
+        timeout (float|None): Максимальное время ожидания в секундах. По
+                             умолчанию None — без ограничения (как раньше);
+                             используй явный таймаут для вызовов, которые не
+                             должны блокировать скрипт навсегда (см. вызовы
+                             ucc.bat из get_docking_progress).
 
     Возвращает:
         str: Стандартный вывод команды
+
+    Вызывает subprocess.TimeoutExpired, если команда не уложилась в timeout.
 
     Пример:
         result = run_command([ucc_path, "list-sites", "--all"])
     """
 
-    result = subprocess.run(cmd_args, capture_output=True)
+    result = subprocess.run(cmd_args, capture_output=True, timeout=timeout)
     # Используем системную кодировку для Windows (cp1251/cp866) вместо utf-8
     encoding = sys.stdout.encoding or 'utf-8'
     stderr = result.stderr.decode(encoding, errors='replace').strip()
@@ -252,7 +259,7 @@ def get_correct_location(site_name, path):
         else:
             raise Exception("Incorrect server path")
 
-def ls_dir(ucc_path, server_dir_path):
+def ls_dir(ucc_path, server_dir_path, timeout=None):
     """
     Вывести содержимое директории на сервере.
 
@@ -261,13 +268,14 @@ def ls_dir(ucc_path, server_dir_path):
     Параметры:
         ucc_path (str): Путь к UCC
         server_dir_path (str): Путь директории на сервере в формате UNICORE
+        timeout (float|None): См. run_command()
 
     Возвращает:
         str: Отформатированный список файлов и директорий
     """
     cmd_args = [ucc_path, "ls", "-l", server_dir_path]
-    
-    return run_command(cmd_args)
+
+    return run_command(cmd_args, timeout=timeout)
 
 def create_dir(ucc_path, server_dir):
     """
@@ -284,7 +292,7 @@ def create_dir(ucc_path, server_dir):
     
     return run_command(cmd_args)
 
-def get_file(ucc_path, server_file_path, local_destination_dir="."):
+def get_file(ucc_path, server_file_path, local_destination_dir=".", timeout=None):
     """
     Скачать один файл с сервера на локальный компьютер.
 
@@ -293,14 +301,15 @@ def get_file(ucc_path, server_file_path, local_destination_dir="."):
         server_file_path (str): Полный путь к файлу на сервере в формате UNICORE
         local_destination_dir (str): Локальная директория для сохранения файла
                                     (по умолчанию текущая директория)
+        timeout (float|None): См. run_command()
 
     Пример:
         get_file(ucc_path, "u6://SKIF_GRID_CIS/Home/user/projects/results.txt", "./local_results/")
     """
     destination_file_path = local_destination_dir + "/" + os.path.basename(server_file_path)
     cmd_args = [ucc_path, "get-file", "-s", server_file_path, "-t", destination_file_path]
-    
-    return run_command(cmd_args)
+
+    return run_command(cmd_args, timeout=timeout)
 
 def get_dir_files(ucc_path, server_dir_path, local_destination_dir="."):
     """

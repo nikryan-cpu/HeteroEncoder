@@ -44,6 +44,7 @@ import json
 import time
 import tempfile
 import shutil
+import subprocess
 from datetime import datetime
 from chemplus import unicore
 
@@ -111,7 +112,7 @@ def get_docking_results(ucc_path, job_id_file, output_dir="."):
     return status
 
 
-def get_docking_progress(ucc_path, job_id_file, log_tail_lines=15):
+def get_docking_progress(ucc_path, job_id_file, log_tail_lines=15, timeout=45):
     """
     Прогресс докинга ДО завершения задачи — сколько молекул уже задокировано
     из скольких, плюс хвост лога. В отличие от get_docking_results(), не ждёт
@@ -120,28 +121,44 @@ def get_docking_progress(ucc_path, job_id_file, log_tail_lines=15):
     ещё выполняется (задача и хранилище — разные вещи в UNICORE).
 
     Как считается:
-        MPI-докинг (chemplus.vina.docking_mpi) пишет результат каждой молекулы
-        сразу по готовности: <sdf_name>_docked/<лиганд>.pdbqt — их количество
-        на сервере и есть числитель. Знаменатель — количество файлов в
-        <sdf_name>_pdbqt/, но эта папка появляется только когда на кластере
-        закончится начальная конвертация SDF -> PDBQT (первый этап sdf_dock(),
-        см. chemplus.vina.docking) — то есть раньше самого докинга, но не
-        сразу в момент отправки задачи.
+        MPI-докинг (chemplus.vina.docking_mpi) на каждую готовую молекулу
+        дописывает строку в <sdf_name>_log.txt: "Processor N\t: SUCCESS/FAILED/
+        ALREADY DONE - молекула, ...". Число таких строк в скачанном логе —
+        числитель (done). Раньше числитель считался отдельным ls по папке
+        <sdf_name>_docked/ — но там уже сотни файлов, и постатейный листинг
+        такой директории через grid-хранилище на порядок медленнее, чем
+        скачать один лог-файл, поэтому от него отказались.
+
+        Знаменатель — количество файлов в <sdf_name>_pdbqt/ (единственное, что
+        по-прежнему считается через ls, другого источника для него нет). Эта
+        папка появляется только когда на кластере закончится начальная
+        конвертация SDF -> PDBQT (первый этап sdf_dock(), см. chemplus.vina.
+        docking) — то есть раньше самого докинга, но не сразу в момент отправки
+        задачи. Она тоже может быть большой и потому медленной для ls.
 
     Параметры:
         ucc_path (str): Путь к UCC (UNICORE Command Client)
         job_id_file (str): Файл ID задачи (.job, тот же что для get_job_status)
-        log_tail_lines (int): Сколько последних строк <sdf_name>_log.txt вернуть
+        log_tail_lines (int): Сколько последних строк лога вернуть в log_tail
+        timeout (float): Секунд на КАЖДЫЙ из двух запросов к кластеру (ls
+                        _pdbqt и get-file лога). ucc.bat иногда отвечает
+                        медленно или не отвечает вовсе — без таймаута
+                        subprocess.run висит бесконечно и вешает весь скрипт.
 
     Возвращает:
         dict:
-            done (int): Сколько молекул уже задокировано (0, если докинг
-                        ещё не начался)
+            done (int): Сколько молекул уже обработано (SUCCESS + FAILED +
+                        ALREADY DONE по логу), 0 если лог ещё не создан или
+                        недоступен
             total (int|None): Сколько молекул всего, None пока <sdf_name>_pdbqt/
-                              ещё не появилась на сервере (идёт подготовка)
-            log_tail (list[str]): Последние строки лога докинга, построчно
-                                  ("Processor N: SUCCESS/FAILED - молекула, ...").
+                              ещё не появилась на сервере (идёт подготовка) или
+                              если запрос не уложился в timeout
+            log_tail (list[str]): Последние строки лога докинга, построчно.
                                   Пусто, если лог ещё не создан.
+            timed_out (bool): True, если хотя бы один из двух запросов не
+                             уложился в timeout — это значит "кластер сейчас не
+                             отвечает", а не "докинг ещё не начался" (done/total
+                             в этом случае могут быть занижены или отсутствовать).
 
     Пример:
         p = get_docking_progress(ucc_path, job_id_file)
@@ -154,34 +171,41 @@ def get_docking_progress(ucc_path, job_id_file, log_tail_lines=15):
     data, work_dir, sdf = _read_job_args(job_id_file)
     site = data["Site"]
     sdf_name = os.path.basename(sdf).split(".")[0]
+    timed_out = False
 
-    def count_pdbqt(subdir):
-        server_dir = unicore.get_correct_location(site, work_dir + "/" + subdir)
-        try:
-            listing = unicore.ls_dir(ucc_path, server_dir)
-        except Exception:
-            return None
-        return sum(1 for line in listing.splitlines()
+    pdbqt_dir = unicore.get_correct_location(site, work_dir + "/" + sdf_name + "_pdbqt")
+    try:
+        listing = unicore.ls_dir(ucc_path, pdbqt_dir, timeout=timeout)
+        total = sum(1 for line in listing.splitlines()
                    if line[:1] == "-" and line.rstrip().endswith(".pdbqt"))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        total = None
+    except Exception:
+        total = None
 
-    total = count_pdbqt(sdf_name + "_pdbqt")
-    done = count_pdbqt(sdf_name + "_docked") or 0
-
-    log_tail = []
+    log_content = []
     log_server_path = unicore.get_correct_location(site, work_dir + "/" + sdf_name + "_log.txt")
     tmp_dir = tempfile.mkdtemp(prefix="chemplus_progress_")
     try:
-        unicore.get_file(ucc_path, log_server_path, tmp_dir)
+        unicore.get_file(ucc_path, log_server_path, tmp_dir, timeout=timeout)
         local_log = os.path.join(tmp_dir, os.path.basename(log_server_path))
         if os.path.exists(local_log):
             with open(local_log, encoding="utf-8", errors="replace") as f:
-                log_tail = f.read().splitlines()[-log_tail_lines:]
+                log_content = f.read().splitlines()
+    except subprocess.TimeoutExpired:
+        timed_out = True
     except Exception:
         pass
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return {"done": done, "total": total, "log_tail": log_tail}
+    # Каждая обработанная молекула — ровно одна строка "Processor N\t: ...";
+    # остальное в логе — заголовок запуска и разделители.
+    done = sum(1 for line in log_content if line.strip().startswith("Processor"))
+    log_tail = log_content[-log_tail_lines:]
+
+    return {"done": done, "total": total, "log_tail": log_tail, "timed_out": timed_out}
 
 
 def unicore_dock(ucc_path, site_name, server_executable, server_work_dir, cpu_count,
